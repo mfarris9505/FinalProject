@@ -1,0 +1,250 @@
+---
+title: "Final_Project"
+author: "Matthew Farris"
+date: "December 12, 2015"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+## Introduction 
+  As we know, these are tulmutous times for our society. With recent events, Police Brutatlity has been on the fore-front of everyones minds. Such has created the need for better oversight, and more realistic expectations for our police force. As such, many people and journalists have taken it upon themselves to document police violence. One site in particular is ["The Counted"](http://www.theguardian.com/us-news/ng-interactive/2015/jun/01/the-counted-police-killings-us-database) This site uses crowdsourced data to identify all the fatalities by police officers in 2015. This site creates an instant source for oversight and documentation, something that is a necessity in our world today. By creating this site, we are no longer relying on the government to provide the data we need to understand trends in our society, but documenting the data ourselves. 
+  
+  The purpose of this project isn't just about the findings, but as a stepping stone to better understand how we the importance of up to date data. This project was done in conjunction with another project that analyzed just a single dataset. That project focused on poverty data, and can be seen [here](http://rpubs.com/mfarris9505/133528). It is my hope with the project to better understand how to extract data from the web and elsewhere, and combine it into a unique dataset. 
+  
+  The focus of this project will take data from 3 separate sources, The Counted Data set, population data by state, and the most recently available data for Police Force size to determine if there is some link between Police Size and the number of Police Fatalities. We hope to answer the question, do larger Police Forces result in an increased number of deaths by police?   
+
+## Obtaining Data
+```{r echo=FALSE}
+library(knitr)
+library(RCurl)
+library(ggplot2)
+library(ggthemes)
+library(Rmisc)
+library(jsonlite)
+library(stringr)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(rvest)
+
+```
+
+### Counted Data Extraction
+
+The first data set we will be pulling from is the Counted Data. Currently, the data source is available via download to CSV. The data file was uploaded to a github page and be extracted as follows: 
+
+```{r}
+url_data <- getURL("https://raw.githubusercontent.com/mfarris9505/FinalProject/master/the-counted.csv")
+
+count_data <- read.csv(textConnection(url_data))
+#Removing some data that is unnecessary for our purpose here to streamline the appearance 
+count_data <- count_data[-c(1,3:10,13)]
+head(count_data)
+```
+
+### Population Data Extraction
+To create a rate, we needed the general population per state. To do this the American Community Survey API from Census.gov. This specific data source uses 5 years of data to best estimate population data. This data is from 2014, which is the most up to date population that we have. Using this API we could easily pull a list using JSON: 
+
+```{r}
+url<- "http://api.census.gov/data/2014/acs5?get=NAME,B01001_001E&for=state:*"
+
+pop2014_data <- fromJSON(url)
+pop2014_data <- data.frame(pop2014_data)
+pop2014_data <- pop2014_data[-1,]
+#Remove excess column
+pop2014_data$X3 <- NULL
+names(pop2014_data) <- c("State","Population")
+
+head(pop2014_data)
+```
+
+### Police Force Data Extraction
+For the other data source we will be using, we will be performing a simple webscrape, extracting a web table. This data is available in CSV form, however, the data in the table on the webpage is in the version which will facilitate cleaning. For the most part, we will be combining this data to create a single rate per state for the two categories to create a comparison. 
+
+```{r}
+police_url <- "http://www.governing.com/gov-data/safety-justice/police-officers-per-capita-rates-employment-for-city-departments.html"
+
+police_data <- police_url %>% 
+  read_html() %>% 
+  html_nodes(xpath ='//*[@id="inputdata"]') %>% 
+  html_table()
+
+police_data <- data.frame(police_data)
+# Removing some Excess data (Working with rates not totals)
+police_data <- police_data[-c(2:4,6)]
+```
+
+This data set was choosen to determine in order to best normalize the data. This data includes the rate of each city per 10k population. As this has more than one city-for most states- by taking the average of these rates should give an approximation of the total state police officer per citizen. This is making alot of assumptions, but for our purposes here should be able to create an approximation
+
+### State Abbreviations
+One other piece of data that I needed to obtain was States Abbreviations. If you look, one of data sources (Population), listed on the states names. This would be problematice in the future, so we uploaded a states Abbr data frame. 
+
+```{r}
+abbr_url <- "http://www.50states.com/abbreviations.htm#.Vm3q9UorKUk"
+
+abbr_data <- abbr_url %>% 
+  read_html() %>% 
+  html_nodes(xpath ='//*[@id="content"]/div[1]/table') %>% 
+  html_table()
+
+abbr_data <- data.frame(abbr_data)
+names(abbr_data) <- c("State", "Abbr")
+```
+
+
+## Data Scrubbing and Transformation
+
+### The Counted Data
+
+For our purposes here we need to transform this data in a single data frame with the rate of police fatalities per 100k population. To do this we need to use some functions. 
+
+```{r}
+count_data$count <- 1
+
+counted_data <- count_data %>%
+  group_by(state) %>%
+  summarise(n()) 
+names(counted_data) <- c("State", "Fatalities")
+```
+
+
+Now that we have a summary of the data, we must combine the population data to create a rate. This can be done simply using the join function on the plyr package. But furst we have to convert the states to abbreviations. This can be done several ways, but the easiest would be to use the same join function that will match the state columns. We are using a left join here as we only need the data from the left table. 
+
+```{r}
+pop2014_data <- join(pop2014_data,abbr_data, by = "State")
+#Removing the Full State Name
+pop2014_data$State <- NULL
+names(pop2014_data) <- c("Population", "State")
+head(pop2014_data)
+```
+
+Now we can combine population to the Counted data. We will be using another left join, as the COunted Data does not have a complete list of states. This is because some data is not represented here (ie. Puerto Rico and Vermont which had no deaths this year). Also, we are computing the rate per Million for the data.   
+
+```{r}
+counted_combined <- join(counted_data, pop2014_data, by = "State")
+counted_combined$Fatalities <- as.numeric(as.character(counted_combined$Fatalities))
+counted_combined$Population <- as.numeric(as.character(counted_combined$Population))
+
+counted_combined <- mutate(counted_combined, Fatal_Rate_Per_Mil = (Fatalities/Population * 1000000))
+
+head(counted_combined)
+```
+
+### Police Force Data 
+
+We need to complete a similar step for the Police Data. To start we need to collect the state data. This must be done using the tidyr separate function:
+
+```{r}
+police_data <- police_data %>% separate(City, c("City", "State"), ",")
+police_data$City <- NULL
+police_data$State <-str_trim(police_data$State)
+head(police_data)
+```
+
+We can now transfrom this into similar data. As we are using rates here. It is important to take the average rather that the sum when calculating the states data: 
+
+```{r}
+police_final <- police_data %>%
+  group_by(State) %>%
+  summarise(mean(Officers.per.10K.residents)) 
+names(police_final) <- c("State", "Officer_Per_10k" )
+
+```
+
+Now we can effectively combine both into a single dataset that we can use for modeling. 
+
+```{r}
+counted_combined$State <- as.character(counted_combined$State)
+counted_combined$State <- factor(counted_combined$State)
+police_final$State <- as.character(police_final$State)
+police_final$State <- factor(police_final$State)
+
+counted_combined <- join(counted_combined, police_final, by = "State")
+
+head(counted_combined)
+```
+
+## Explore and Visualize
+
+Now that the data is condensed and collated, it is time to start exploring what we have created. The best way to do this would be to provide some summary statistics: 
+
+```{r}
+summary(counted_combined)
+```
+
+
+After reviewing the summary statistics, it is important to visualize the data to see if we have any discrepancies, to see if the data approaches a normal trend, etc. We can use boxplot data and histograms to better "see" the data:  
+
+
+```{r echo = FALSE}
+p1 <- ggplot(counted_combined, aes(1, Officer_Per_10k)) +
+  geom_boxplot()+
+  theme_stata() + 
+  scale_colour_stata() +
+  ggtitle("Police Size Boxplot")
+
+p2 <- ggplot(counted_combined, aes(Officer_Per_10k)) +
+  geom_histogram(binwidth = 5)+
+  theme_stata() + 
+  scale_colour_stata() +
+  ggtitle("Police Size Histogram")
+
+p3 <- ggplot(counted_combined, aes(1, Fatal_Rate_Per_Mil)) +
+  geom_boxplot()+
+  theme_stata() + 
+  scale_colour_stata()+
+  ggtitle("Fatalities Boxplot")
+
+p4 <- ggplot(counted_combined, aes(Fatal_Rate_Per_Mil)) +
+  geom_histogram(binwidth = .3)+
+  theme_stata() + 
+  scale_colour_stata() +
+   ggtitle("Fatalities Histogram")
+
+multiplot(p1,p2,p3,p4, cols = 2)
+```
+
+From what we can see here, is we have some potential Outliers. An examination of outliers and how to remove them will be discussed in a later course, however, for our purposes here, the one Outlier that is causing much concern is the DC data, particularly in terms of the higher number of police officers per citizen. As DC is not a State, and represents a rather heavily policed area (particularly because of the importance of certain individuals who reside their) I believe it is warranted to remove this particular point. As we want to make a comparsion to Police size, this one would create an inherent bias. Again, not too familiar with the process of eliminating outliers, but these reasons seem to justifyit's removal. With this in mind we can start our modeling process.
+
+## Modelling
+For our process here, we determined that linear regression would likely be the best model, and the one I am currently most familiar with. Using linear regression its best to start with a plot of the two variables to determine if police size in any way influences the fatalities by officers. We will perform a simple linear regression model with a 95% confidence. Our null hypothesis is that slope or $\beta$ = 0, and our alternate is that $\beta$ does not equal 0/     
+```{r}
+counted_combined <- counted_combined[-8,]
+ggplot(counted_combined, aes(Officer_Per_10k, Fatal_Rate_Per_Mil)) +
+  geom_point()+
+  geom_smooth(method="lm") +
+  theme_stata() + 
+  scale_colour_stata()
+```
+
+As we can see from the graph, the linear model shows that there is an apparent decrease in fatalities with larger sized police forces. However, it is good to note here, that the confidence region shows that their is not much signifcance in this data, as the true slope with a 95% probabilty could be positive. This can be further seen by reviewing the the linear model function. 
+
+```{r}
+counted_lm <- lm(Fatal_Rate_Per_Mil ~ Officer_Per_10k, data = counted_combined)
+summary(counted_lm)
+```
+
+Again, we can see from our summary that the model is not statisitcally significant. The p-value in the model is much too high to provide 
+
+In order for a linear model to be valid we must check to see if meets certain criteria. First, the model must be linear, which we can see from the graph. Also, plotting the residuals vs Officers will give us an idea, this can be seen in Plot 1 below. Furthermore, a plot of the residual histogram should approach normal, that can be seen in Plot 2
+
+```{r}
+q1 <- ggplot(data = NULL, aes(x=counted_combined$Officer_Per_10k, y=counted_lm$residuals)) +
+  geom_point() +
+  geom_abline(intercept=0, slope=0) +
+  ggtitle("Residual Plot 1")
+
+q2 <- ggplot(data = counted_lm, aes(Officer_Per_10k)) +
+  geom_histogram() +
+  ggtitle("Histogram Plot 2")
+
+multiplot(q1,q2, cols = 2)
+```
+
+From what I can see, the linearity doesn't past muster, there is not a consistent distribution, we can see some patterns developing. This could be an indication that there is some other model (that I am unfamiliar with) which may be better suited. The residuals, however, do appear to be normally distributed, with a slight skew.  
+
+## Interpret and Conclusion 
+
+From the data presented above, we can see that we failed to reject our null, and our data here shows no apparent linear relationship between Police Size and Police Fatalities. However, this isn't a clear indidication that there is no pattern at all. to police size and police fatalities. The fact is there are so many other factors that may play a role in determining. 
+
